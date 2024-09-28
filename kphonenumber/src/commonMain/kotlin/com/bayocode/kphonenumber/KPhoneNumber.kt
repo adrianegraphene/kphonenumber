@@ -40,7 +40,137 @@ class KPhoneNumber {
             }
         }
     }
-    
+
+    // Helper class for matching and formatting
+    inner class PhoneNumberMatcher(
+        private val regionCode: String,
+        private val input: String
+    ) {
+
+        private val metadata: MetadataTerritory? = metadataManager.filterTerritories(regionCode)
+        private val formats = metadata?.numberFormats ?: emptyList()
+        private val normalizedInput = regexManager.stringByReplacingOccurrences(input, PhoneNumberPatterns.allNormalizationMappings, true)
+        private val formatParts = mutableListOf<String>()
+        private var currentPartIndex = 0
+        private var currentDigitIndex = 0
+        private var formattedNumber = ""
+
+        init {
+            // Start with the first format part, usually a '('
+            formatParts.add(if (metadata?.nationalPrefixFormattingRule?.isNotEmpty() == true) {
+                regexManager.replaceStringByRegex(PhoneNumberPatterns.npPattern, metadata.nationalPrefixFormattingRule, metadata.nationalPrefix ?: "")
+            } else {
+                "("
+            })
+        }
+
+        fun nextDigit(digit: String): String {
+            if (digit.isEmpty()) {
+                return formattedNumber
+            }
+            val normalizedDigit = regexManager.stringByReplacingOccurrences(digit, PhoneNumberPatterns.allNormalizationMappings)
+            currentDigitIndex++
+
+            // 1. Check if we've reached a digit placeholder in the format
+            if (currentPartIndex < formatParts.size && formatParts[currentPartIndex].startsWith("\\$")) {
+                formattedNumber += normalizedDigit
+                currentPartIndex++
+                return formattedNumber
+            }
+
+            // 2. Check if there are potential country codes to consider
+            val potentialCountryCode = "$normalizedDigit${normalizedInput.substring(0, currentDigitIndex)}".toIntOrNull()
+            if (potentialCountryCode != null && potentialCountryCode > 10) {
+                val potentialMetadata = metadataManager.filterTerritories(potentialCountryCode)
+                potentialMetadata?.let {
+
+                    // 3. Reset and apply the format of the potential country code
+                    formattedNumber = ""
+                    currentPartIndex = 0
+                    formatParts.clear()
+                    formatParts.add(if (it.first().nationalPrefixFormattingRule?.isNotEmpty() == true) {
+                        regexManager.replaceStringByRegex(PhoneNumberPatterns.npPattern, it.first().nationalPrefixFormattingRule.toString(), it.first().nationalPrefix ?: "")
+                    } else {
+                        "("
+                    })
+                    return formatAsYouType(normalizedInput, it.first().codeID)
+                }
+            }
+
+            // 4. Check if there's a format to apply
+            if (currentPartIndex < formatParts.size) {
+                formattedNumber += formatParts[currentPartIndex]
+                currentPartIndex++
+                return formattedNumber
+            }
+
+            // 5. No format found, just append the digit
+            formattedNumber += normalizedDigit
+            return formattedNumber
+        }
+
+        fun formatAsYouType(input: String, region: String): String {
+            // 1. Find the Longest Matching Format
+            var selectedFormat: MetadataPhoneNumberFormat? = null
+            formats.forEach { format ->
+                format.leadingDigitsPatterns?.lastOrNull()?.let { leadingDigitPattern ->
+                    if (regexManager.stringPositionByRegex(leadingDigitPattern, input) == 0) {
+                        selectedFormat = format
+                    }
+                } ?: run {
+                    if (regexManager.matchesEntirely(format.pattern, input)) {
+                        selectedFormat = format
+                    }
+                }
+            }
+
+            // 2. Format the Number Incrementally
+            return selectedFormat?.let { formatPattern ->
+                val pattern = formatPattern.pattern ?: return input
+                val format = formatPattern.format ?: return input
+
+                // Split the format into parts (using $1, $2, etc.)
+                val formatParts = format.split(Regex("\\$([0-9])"))
+
+                // Track the formatted number and current part index
+                var formattedNumber = ""
+                var currentPartIndex = 0
+
+                // Loop through the input number and format it
+                var currentDigitIndex = 0
+                while (currentDigitIndex < input.length) {
+                    if (currentPartIndex < formatParts.size && formatParts[currentPartIndex].startsWith("\\$")) {
+                        // If it's a digit placeholder, add the next digit
+                        formattedNumber += input[currentDigitIndex]
+                        currentDigitIndex++
+                        currentPartIndex++
+                    } else {
+                        // If it's a fixed part of the format, add it
+                        formattedNumber += formatParts[currentPartIndex]
+                        currentPartIndex++
+                    }
+                }
+                formattedNumber
+            } ?: input
+        }
+
+        fun currentFormattedNumber(): String = formattedNumber
+
+    }
+
+    fun formatAsYouType(numberString: String, region: String): String {
+        val phoneNumberMatcher = PhoneNumberMatcher(region, numberString)
+        return phoneNumberMatcher.currentFormattedNumber()
+    }
+
+
+    fun main() {
+        println("KPhoneNumber Main")
+        val kPhoneNumber = KPhoneNumber()
+        val formattedNumber = kPhoneNumber.formatAsYouType("+33 6 89 017383", "FR")
+        println("Formatted Number: $formattedNumber")
+    }
+
     fun allCountries(): List<String> {
         return metadataManager.territories.map { it.codeID }
     }
